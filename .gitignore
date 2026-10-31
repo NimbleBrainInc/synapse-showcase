@@ -1,0 +1,15 @@
+.venv/
+workspace/
+.nimblebrain/
+__pycache__/
+*.pyc
+*.egg-info/
+.ruff_cache/
+.pytest_cache/
+dist/
+build/
+.env
+.env.*
+ui/node_modules/
+ui/dist/
+ui/.vite/
