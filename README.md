@@ -8,9 +8,10 @@ The release packaging follows in a separate change.
 
 ## Develop
 
-Use Python 3.13 or newer and Node.js 24 or newer. Prepare the Python environment from the
-committed lock with `uv sync --frozen --dev` and the UI with
-`npm --prefix ui ci --ignore-scripts`, subject to your host's package policy. Then:
+Use Python 3.13 or newer and Node.js 24 or newer. Build the UI first with
+`npm --prefix ui ci --ignore-scripts` and `make build`, because the Python package includes
+`ui/dist/index.html` and `uv sync` stops without it. Then prepare the Python environment from
+the committed lock with `uv sync --frozen --dev`, subject to your host's package policy, and:
 
 ```sh
 make dev       # Vite preview at /__preview, with a stdio Python server
