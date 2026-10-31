@@ -30,14 +30,22 @@ const groups = [
 const statuses = { todo: "To do", doing: "Doing", done: "Done" } as const;
 const message = (error: unknown) =>
   error instanceof Error ? error.message : "The action could not finish.";
+// A Light or Dark choice replaces every colour token the kit reads, so none is left on the
+// host's other mode: the selected chapter and hover use the tertiary background.
 const previewTokens = {
   "--color-background-primary": "Canvas",
   "--color-background-secondary": "color-mix(in srgb, CanvasText 6%, Canvas)",
+  "--color-background-tertiary": "color-mix(in srgb, CanvasText 10%, Canvas)",
   "--color-text-primary": "CanvasText",
   "--color-text-secondary": "color-mix(in srgb, CanvasText 65%, Canvas)",
+  "--color-text-tertiary": "color-mix(in srgb, CanvasText 55%, Canvas)",
   "--color-text-accent": "CanvasText",
   "--color-text-inverse": "Canvas",
+  "--color-text-danger": "light-dark(#b91c1c, #f87171)",
+  "--color-text-success": "light-dark(#047857, #34d399)",
+  "--color-text-warning": "light-dark(#b45309, #fbbf24)",
   "--color-border-primary": "color-mix(in srgb, CanvasText 18%, Canvas)",
+  "--color-border-secondary": "color-mix(in srgb, CanvasText 28%, Canvas)",
   "--color-ring-primary": "CanvasText",
 } as CSSProperties;
 
