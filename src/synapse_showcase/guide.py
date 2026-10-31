@@ -3,11 +3,14 @@
 import asyncio
 import contextlib
 import json
+import os
 import weakref
 from collections.abc import Awaitable, Callable
+from pathlib import Path
 from typing import Any
 
 from fastmcp import FastMCP
+from fastmcp.resources import FileResource
 from fastmcp.server.middleware import Middleware, MiddlewareContext
 from fastmcp.tools import Tool, ToolResult
 from jsonschema import Draft202012Validator
@@ -42,6 +45,8 @@ APP_INSTRUCTIONS = (
     "access. Missing host prerequisites and package policy approvals belong to the operator; "
     "never change package policy or acquire provider keys."
 )
+GUIDE_URI = "ui://showcase/guide"
+UI_META = {"ui": {"resourceUri": GUIDE_URI}}
 SKILLS = (
     Skill(
         name="guide-skill",
@@ -117,7 +122,7 @@ def tool(
         description=description,
         parameters=schema,
         annotations=annotations,
-        meta=meta,
+        meta=UI_META if meta is None and annotations is WRITE else meta,
         handler=handler,
     )
 
@@ -203,6 +208,17 @@ class Guide:
         server.add_middleware(_Sessions(self))
         for item in self._tools(external):
             server.add_tool(item)
+        directory = Path(os.environ.get("SHOWCASE_UI_DIR", asset_root() / "ui" / "dist"))
+        server.add_resource(
+            FileResource(
+                uri=GUIDE_URI,
+                name="guide",
+                title="Showcase",
+                mime_type="text/html;profile=mcp-app",
+                path=(directory / "index.html").resolve(),
+                is_binary=False,
+            )
+        )
         SkillsExtension(SKILLS).install(server)
         return server
 
@@ -257,6 +273,7 @@ class Guide:
                 "chosen step.",
                 status,
                 annotations=READ,
+                meta=UI_META,
             ),
             tool(
                 "guide_step",
@@ -396,7 +413,7 @@ class Guide:
                     ToolAnnotations(readOnlyHint=False, destructiveHint=False, openWorldHint=True),
                     # An install can restart NimbleBrain, so only the person's click in Showcase
                     # makes one. NimbleBrain refuses agent calls to app-only tools.
-                    {"ui": {"visibility": ["app"]}},
+                    {"ui": {**UI_META["ui"], "visibility": ["app"]}},
                 ),
             ),
             (
@@ -421,6 +438,7 @@ class Guide:
                     {"app": app, "action": {"type": "string", "enum": ["start", "stop"]}},
                     ("app", "action"),
                     ToolAnnotations(readOnlyHint=False, destructiveHint=True, openWorldHint=False),
+                    UI_META,
                 ),
             ),
             (

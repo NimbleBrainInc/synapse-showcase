@@ -1,8 +1,8 @@
-"""Exercise the optional host through the same MCP contract a host screen uses."""
+"""Exercise the optional host through the same MCP contract used by the retained UI."""
 
 from fastmcp import Client
 
-from synapse_showcase.guide import Guide
+from synapse_showcase.guide import GUIDE_URI, Guide
 from synapse_showcase.host import CAPABILITIES
 from synapse_showcase.state import GuideStore
 from tests.conftest import call, eventually, state, tool_names
@@ -52,6 +52,8 @@ async def test_host_tools_preserve_confirmation_schema_and_forward_only_valid_in
         assert tools["app_install"].annotations.openWorldHint
         assert tools["app_install"].meta["ui"]["visibility"] == ["app"]
         assert tools["app_lifecycle"].annotations.destructiveHint
+        for name in ("guide_status", "guide_step", "board_add", "app_install", "app_lifecycle"):
+            assert tools[name].meta["ui"]["resourceUri"] == GUIDE_URI
         for args in (
             {"app": "crm"},
             {"app": "crm", "planHash": "a" * 64, "confirm": False},
@@ -75,15 +77,26 @@ async def test_host_tools_preserve_confirmation_schema_and_forward_only_valid_in
         )
 
 
-async def test_host_failure_preserves_saved_guide_actions(data_file):
+async def test_host_failure_preserves_saved_guide_actions_and_resource_read(
+    data_file, tmp_path, monkeypatch
+):
     host = FakeHost()
     host.broken = True
+    ui = tmp_path / "ui"
+    ui.mkdir()
+    ui.joinpath("index.html").write_text("<!doctype html><title>Static guide</title>")
+    monkeypatch.setenv("SHOWCASE_UI_DIR", str(ui))
     async with Client(Guide(GuideStore(data_file), host).make_server()) as client:
         saved = await state(client, "board_add", {"title": "Survives host loss"})
         assert saved["cards"][-1]["title"] == "Survives host loss"
         assert "hostError" in saved["installation"]
         assert "Host status is unavailable" in (await state(client, "app_job_status"))["error"]
         data_file.write_text("unreadable personal progress")
+        before = len(host.calls)
+        read = (await client.read_resource_mcp(GUIDE_URI)).contents[0]
+        assert read.mimeType == "text/html;profile=mcp-app"
+        assert read.text == ui.joinpath("index.html").read_text()
+        assert len(host.calls) == before
     assert data_file.read_text() == "unreadable personal progress"
 
 

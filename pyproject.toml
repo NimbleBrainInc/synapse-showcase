@@ -32,6 +32,9 @@ only-include = ["src/synapse_showcase", "skills"]
 "src" = ""
 "skills" = "synapse_showcase/assets/skills"
 
+[tool.hatch.build.targets.wheel.force-include]
+"ui/dist/index.html" = "synapse_showcase/assets/ui/dist/index.html"
+
 [dependency-groups]
 dev = [
     "ruff>=0.13.1",

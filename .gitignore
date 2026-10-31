@@ -10,3 +10,6 @@ dist/
 build/
 .env
 .env.*
+ui/node_modules/
+ui/dist/
+ui/.vite/

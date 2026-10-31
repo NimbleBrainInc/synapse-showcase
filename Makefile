@@ -1,6 +1,14 @@
 PYTHON ?= .venv/bin/python
 
-.PHONY: run run-http format lint typecheck test verify
+.PHONY: dev build build-ui run run-http format lint typecheck test verify
+
+dev:
+	cd ui && npm run dev
+
+build: build-ui
+
+build-ui:
+	cd ui && npm run build
 
 run:
 	$(PYTHON) -m synapse_showcase.server --stdio --data-file workspace/showcase/progress.json
@@ -16,8 +24,9 @@ lint:
 
 typecheck:
 	$(PYTHON) -m ty check src/
+	cd ui && npm run typecheck
 
 test:
 	$(PYTHON) -m pytest tests/
 
-verify: format lint typecheck test
+verify: format lint typecheck test build-ui
