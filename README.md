@@ -27,9 +27,14 @@ directory containing `index.html`.
 ## Run and connect
 
 The package entry point is `python -m synapse_showcase.server`. Stdio is the default. HTTP mode
-uses `--http --port 27249` and exposes `/mcp`, `/agent/mcp` and `/health` on loopback only.
-`/agent/mcp` adds `guide_connection_check`, which records that an external agent called the
-guide. It does not verify a model provider or a chat reply.
+uses `--http --port 27249` and exposes `/mcp`, `/agent/mcp` and `/health` on loopback only. An
+HTTP MCP client sends the header `x-showcase-client: local`; requests with a browser `Origin`, a
+non-loopback `Host` or a body over 64 KiB are refused.
+
+The tools are `guide_status`, `guide_step`, `guide_preferences`, `guide_view`, `board_add`,
+`board_move` and `catalog_list`. `/agent/mcp` adds `guide_connection_check`, which records that
+an external agent called the guide. It does not verify a model provider or a chat reply. The
+guide skill is served through the MCP Skills extension at `skill://showcase/guide/SKILL.md`.
 
 The screen is the MCP resource `ui://showcase/guide`, served as
 `text/html;profile=mcp-app`. A host must support MCP Apps to render it; opening the built HTML
@@ -37,8 +42,9 @@ directly does not supply the MCP bridge.
 
 Progress and sample cards are stored in one JSON file. Select it with `--data-file` or
 `SHOWCASE_DATA_FILE`; otherwise it is `showcase/progress.json` under `MPAK_WORKSPACE`, or under
-the current directory. Every process sharing that file sees the same progress. The practice
-board is separate from NimbleBrain Tasks and installed apps.
+the current directory. Every process sharing that file sees the same progress, and each saved
+change is announced to every open session. The practice board is separate from NimbleBrain
+Tasks and installed apps.
 
 A standalone guide works without an installer. A local installer can supply the
 optional app planning, installation, status and external-agent setup capabilities through the
