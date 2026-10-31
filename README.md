@@ -42,6 +42,12 @@ board is separate from NimbleBrain Tasks and installed apps.
 
 A standalone guide works without an installer. A local installer can supply the
 optional app planning, installation, status and external-agent setup capabilities through the
-server's `--http --host-stdio` mode. The installer owns package approval, processes, source
-verification and recovery. Showcase does not acquire apps itself. Unavailable capabilities
-are omitted from the tools and shown as unavailable in the guide.
+server's `--http --host-stdio` mode. In that mode an HTTP MCP client sends
+`x-nimble-bootstrap: local` in place of `x-showcase-client: local`. The installer owns package
+approval, processes, source verification and recovery. Showcase does not acquire apps itself.
+Unavailable capabilities are omitted from the tools and shown as unavailable in the guide.
+
+The installer's tools are `app_plan`, `app_install`, `app_status`, `app_lifecycle` and
+`guide_agent_setup`, each present only when the installer reports it, plus `app_job_status`.
+`app_install` is for Showcase's own screen; `/agent/mcp` leaves it out. The add-app skill is
+served at `skill://showcase/add-app/SKILL.md`.
