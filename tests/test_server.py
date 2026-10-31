@@ -79,9 +79,12 @@ async def test_the_guide_skill_is_discoverable_without_creating_saved_progress(d
         listing = await client.session.send_request(
             SkillsRequest(SkillsListRequest()), SkillsListResult
         )
-        assert [skill["uri"] for skill in listing.skills] == ["skill://showcase/guide/SKILL.md"]
+        assert [skill["uri"] for skill in listing.skills] == [
+            "skill://showcase/guide/SKILL.md",
+            "skill://showcase/add-app/SKILL.md",
+        ]
         for skill in listing.skills:
-            assert skill["frontmatter"]["name"] == "showcase-guide"
+            assert skill["frontmatter"]["name"] in ("showcase-guide", "showcase-add-app")
             assert re.fullmatch(r"sha256:[a-f0-9]{64}", skill["resources"][0]["digest"])
             fetched = await client.session.send_request(
                 SkillsRequest(SkillsGetRequest(params=SkillsGetParams(uri=skill["uri"]))),

@@ -4,8 +4,8 @@ Showcase is a guide app for NimbleBrain. It teaches how an MCP app works: a pers
 call the same tools, and both see one saved guide and practice board. It is a Python FastMCP
 server, licensed under the [MIT License](LICENSE).
 
-This first stage is the guide server alone. The screen, the hooks a local installer uses and the
-release packaging follow in separate changes.
+This stage is the guide server and the hooks a local installer uses. The screen and the release
+packaging follow in separate changes.
 
 ## Develop
 
@@ -35,3 +35,9 @@ Progress and sample cards are stored in one JSON file. Select it with `--data-fi
 the current directory. Every process sharing that file sees the same progress, and each saved
 change is announced to every open session. The practice board is separate from NimbleBrain
 Tasks and installed apps.
+
+A standalone guide works without an installer. A local installer can supply the
+optional app planning, installation, status and external-agent setup capabilities through the
+server's `--http --host-stdio` mode. The installer owns package approval, processes, source
+verification and recovery. Showcase does not acquire apps itself. Unavailable capabilities
+are omitted from the tools and shown as unavailable in the guide.

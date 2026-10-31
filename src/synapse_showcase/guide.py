@@ -18,6 +18,7 @@ from pydantic import Field
 from synapse_showcase import __version__
 from synapse_showcase.assets import asset_root
 from synapse_showcase.content import FOCUS, STEP_IDS, STEPS
+from synapse_showcase.host import CAPABILITIES, Host
 from synapse_showcase.skills import Skill, SkillsExtension
 from synapse_showcase.state import GuideStore
 
@@ -31,12 +32,28 @@ INSTRUCTIONS = (
     "keys or makes provider requests. Never change host DOM. An external connection check does "
     "not prove a provider-backed chat works."
 )
+APP_INSTRUCTIONS = (
+    " Apps such as Todo Board and CRM have screens inside NimbleBrain. Read app_plan to review "
+    "source, locked dependencies, local server, workspace connection, prerequisites and possible "
+    "managed-runtime restart. The person chooses Review, then Install or Connect, in Showcase; "
+    "only that click calls app_install. Installation returns a host job, which can outlast a "
+    "managed-runtime restart. Poll app_job_status and report ready only after verified tools and "
+    "UI. Adding an app does not authorize external accounts or expand existing external data "
+    "access. Missing host prerequisites and package policy approvals belong to the operator; "
+    "never change package policy or acquire provider keys."
+)
 SKILLS = (
     Skill(
         name="guide-skill",
         uri="skill://showcase/guide/SKILL.md",
         path=asset_root() / "skills" / "guide" / "SKILL.md",
         title="Guide the first few steps",
+    ),
+    Skill(
+        name="add-app-skill",
+        uri="skill://showcase/add-app/SKILL.md",
+        path=asset_root() / "skills" / "add-app" / "SKILL.md",
+        title="Add an available app",
     ),
 )
 SCHEMA = "https://json-schema.org/draft/2020-12/schema"
@@ -114,19 +131,59 @@ class Guide:
     a write from any process refreshes every view.
     """
 
-    def __init__(self, store: GuideStore):
+    def __init__(self, store: GuideStore, host: Host | None = None):
         self.store = store
+        self.host = host
         self.listeners: set[Callable[[], None]] = set()
         self._sessions: weakref.WeakSet[Any] = weakref.WeakSet()
         self._users = 0
         self._watcher: asyncio.Task[None] | None = None
         self._last: int | None = None
+        self._host_watcher: asyncio.Task[None] | None = None
+        self._host_changed = asyncio.Event()
+        self._unsubscribe: Callable[[], None] | None = None
+
+    async def _read_host(self) -> dict[str, Any]:
+        if self.host is None:
+            return {"installation": {"managed": False}, "apps": [], "appJob": None}
+        try:
+            observed = await self.host.call("snapshot", {})
+            if (
+                not isinstance(observed.get("installation"), dict)
+                or not isinstance(observed.get("apps"), list)
+                or not isinstance(observed.get("appJob"), (dict, type(None)))
+            ):
+                raise ValueError("Invalid host snapshot.")
+            return observed
+        except Exception:
+            return {
+                "installation": {
+                    "hostError": "Host status is unavailable. The guide and practice board still work."
+                },
+                "apps": [],
+                "appJob": None,
+            }
 
     async def snapshot(self) -> dict[str, Any]:
+        observed = await self._read_host()
+        catalog = self.store.catalogue()
+        if observed.get("browseConnectorsUrl"):
+            catalog = [
+                {**item, "browseUrl": observed["browseConnectorsUrl"]}
+                if item.get("action") == "browse-connectors"
+                else item
+                for item in catalog
+            ]
         return {
             **self.store.read(),
             "steps": list(STEPS),
-            "catalog": self.store.catalogue(),
+            "catalog": catalog,
+            "installation": observed["installation"],
+            "apps": observed["apps"],
+            "appJob": observed.get("appJob"),
+            "capabilities": {
+                name: bool(self.host and self.host.capabilities[name]) for name in CAPABILITIES
+            },
         }
 
     async def _mutate(self, edit: Callable[[], object]) -> ToolResult:
@@ -134,8 +191,14 @@ class Guide:
         return result(await self.snapshot())
 
     def make_server(self, external: bool = False) -> FastMCP:
+        instructions = INSTRUCTIONS
+        if self.host is not None:
+            if self.host.capabilities["appPlan"] or self.host.capabilities["appInstall"]:
+                instructions += APP_INSTRUCTIONS
+            if self.host.capabilities["agentSetup"]:
+                instructions += " guide_agent_setup gives external-agent instructions."
         server = FastMCP(
-            "showcase", instructions=INSTRUCTIONS, version=__version__, lifespan=self._lifespan
+            "showcase", instructions=instructions, version=__version__, lifespan=self._lifespan
         )
         server.add_middleware(_Sessions(self))
         for item in self._tools(external):
@@ -262,6 +325,14 @@ class Guide:
                 annotations=READ,
             ),
         ]
+        if self.host is not None:
+            # The external endpoint has no Showcase screen, so it omits app-only tools.
+            tools.extend(
+                item
+                for item in self._host_tools()
+                if not external
+                or "model" in (item.meta or {}).get("ui", {}).get("visibility", ["model"])
+            )
         if external:
             tools.append(
                 tool(
@@ -275,6 +346,105 @@ class Guide:
                 )
             )
         return tools
+
+    def _host_tools(self) -> list[GuideTool]:
+        host = self.host
+        assert host is not None
+        app = {"type": "string", "enum": ["todo-board", "crm"]}
+
+        def invoke(method: str) -> Handler:
+            async def action(args: dict[str, Any]) -> ToolResult:
+                return result(await host.call(method, args))
+
+            return action
+
+        async def job(_: dict[str, Any]) -> ToolResult:
+            observed = await self._read_host()
+            installation = observed["installation"]
+            data = {"job": observed.get("appJob")}
+            error = installation.get("appJobError", installation.get("hostError"))
+            if error is not None:
+                data["error"] = error
+            return result(data)
+
+        definitions = [
+            (
+                "appPlan",
+                tool(
+                    "app_plan",
+                    "Review app installation",
+                    "Read-only plan: connect a prepared app server without package work, or review the full install plan for the chosen app. Lists exact local effects; workspace selection happens after confirmation. Grants no external account access.",
+                    invoke("appPlan"),
+                    {"app": app},
+                    ("app",),
+                    READ,
+                ),
+            ),
+            (
+                "appInstall",
+                tool(
+                    "app_install",
+                    "Add an app",
+                    "Called by Showcase's Install or Connect button after the person reviews the exact app_plan; hidden from the agent. Queues its connection-only or full local installation under existing package policy. The host's job can outlast a managed NimbleBrain restart. Returns a durable job; use app_job_status for verified tools and UI. Grants no external account access.",
+                    invoke("appInstall"),
+                    {
+                        "app": app,
+                        "planHash": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+                        "confirm": {"type": "boolean", "const": True},
+                    },
+                    ("app", "planHash", "confirm"),
+                    ToolAnnotations(readOnlyHint=False, destructiveHint=False, openWorldHint=True),
+                    # An install can restart NimbleBrain, so only the person's click in Showcase
+                    # makes one. NimbleBrain refuses agent calls to app-only tools.
+                    {"ui": {"visibility": ["app"]}},
+                ),
+            ),
+            (
+                "appStatus",
+                tool(
+                    "app_status",
+                    "Check app status",
+                    "Verify this app's actual process, tools, UI and workspace connection. Does not install or repair anything.",
+                    invoke("appStatus"),
+                    {"app": app},
+                    ("app",),
+                    READ,
+                ),
+            ),
+            (
+                "appLifecycle",
+                tool(
+                    "app_lifecycle",
+                    "Start or stop an installed app",
+                    "Change only an already registered app's verified local process, when the person asks. Does not install code or stop NimbleBrain.",
+                    invoke("appLifecycle"),
+                    {"app": app, "action": {"type": "string", "enum": ["start", "stop"]}},
+                    ("app", "action"),
+                    ToolAnnotations(readOnlyHint=False, destructiveHint=True, openWorldHint=False),
+                ),
+            ),
+            (
+                "agentSetup",
+                tool(
+                    "guide_agent_setup",
+                    "Show external agent setup",
+                    "Read the exact local MCP configuration and setup commands for Claude Code or Codex. Writes no agent settings and returns no keys.",
+                    invoke("agentSetup"),
+                    {"agent": {"type": "string", "enum": ["claude", "codex"]}},
+                    ("agent",),
+                    READ,
+                ),
+            ),
+        ]
+        return [item for capability, item in definitions if host.capabilities[capability]] + [
+            tool(
+                "app_job_status",
+                "Read installation progress",
+                "Read the latest app install job, including real stages, failure or verified readiness. Does not start work.",
+                job,
+                annotations=READ,
+            )
+        ]
 
     async def notify(self) -> None:
         """Tell every open session, then every listener, that the saved guide changed."""
@@ -295,6 +465,10 @@ class Guide:
             except (OSError, ValueError):
                 self._last = None
             self._watcher = asyncio.create_task(self._watch())
+            if self.host is not None:
+                self._unsubscribe = self.host.subscribe(self._host_changed.set)
+                self._host_changed.set()
+                self._host_watcher = asyncio.create_task(self._watch_host())
         try:
             yield {}
         finally:
@@ -304,6 +478,26 @@ class Guide:
                 with contextlib.suppress(asyncio.CancelledError):
                     await self._watcher
                 self._watcher = None
+                if self._unsubscribe is not None:
+                    self._unsubscribe()
+                    self._unsubscribe = None
+                if self._host_watcher is not None:
+                    self._host_watcher.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await self._host_watcher
+                    self._host_watcher = None
+
+    async def _watch_host(self) -> None:
+        while True:
+            await self._host_changed.wait()
+            self._host_changed.clear()
+            try:
+                observed = await self._read_host()
+                if (observed.get("appJob") or {}).get("state") == "ready":
+                    self.store.complete("catalog")
+            except (OSError, ValueError):
+                pass  # Status reads report saved-file trouble without overwriting it.
+            await self.notify()
 
     async def _watch(self) -> None:
         while True:
