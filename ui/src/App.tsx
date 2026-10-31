@@ -8,6 +8,7 @@ import {
   SidebarLayout,
   Text,
   tokens,
+  useSidebar,
 } from "@nimblebrain/synapse/ui";
 import {
   type CSSProperties,
@@ -28,6 +29,15 @@ const groups = [
   { title: "Build an app", steps: ["build"] },
 ];
 const statuses = { todo: "To do", doing: "Doing", done: "Done" } as const;
+// Synapse marks the closed drawer with inert={!open}, and React 18 drops a boolean inert, so
+// the off-screen chapters stayed in the Tab order. A string attribute reaches the DOM.
+function ChapterSidebar({ children }: { children: ReactNode }) {
+  const sidebar = useSidebar();
+  const closed = sidebar.collapsed && sidebar.mode === "drawer" && !sidebar.open;
+  return (
+    <SidebarLayout.Sidebar {...(closed ? { inert: "" } : {})}>{children}</SidebarLayout.Sidebar>
+  );
+}
 const message = (error: unknown) =>
   error instanceof Error ? error.message : "The action could not finish.";
 // A Light or Dark choice replaces every colour token the kit reads, so none is left on the
@@ -766,7 +776,7 @@ export default function App() {
       </AppFrame.Header>
       <AppFrame.Body bleed>
         <SidebarLayout width={210} collapseMode="drawer">
-          <SidebarLayout.Sidebar>
+          <ChapterSidebar>
             <nav aria-label="Guide chapters" className="chapters">
               {groups.map((group, position) => (
                 <Button
@@ -785,7 +795,7 @@ export default function App() {
                 </Button>
               ))}
             </nav>
-          </SidebarLayout.Sidebar>
+          </ChapterSidebar>
           <SidebarLayout.Main>
             <main className="guide-main" aria-busy={busy}>
               <div className="guide-toolbar">
