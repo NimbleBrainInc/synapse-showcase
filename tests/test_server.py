@@ -43,6 +43,19 @@ async def test_native_and_external_tools_share_saved_state_across_a_restart(data
     assert current["revision"] == 3
 
 
+async def test_only_the_external_connection_check_completes_the_agents_chapter(data_file):
+    async with serve(create_http_app(Guide(GuideStore(data_file)))) as base:
+        async with over_http(base) as native, over_http(base, "/agent/mcp") as agent:
+            refused = await call(native, "guide_step", {"step": "agents", "complete": True})
+            assert refused.isError
+            chosen = await state(native, "guide_step", {"step": "agents"})
+            assert chosen["step"] == "agents"
+            assert "agents" not in chosen["completed"]
+            checked = await state(agent, "guide_connection_check")
+            assert "agents" in checked["completed"]
+            assert "agentCheck" in checked
+
+
 async def test_unreadable_progress_is_a_tool_error_and_stays_on_disk(data_file):
     data_file.parent.mkdir(parents=True)
     data_file.write_text("interrupted personal progress")
