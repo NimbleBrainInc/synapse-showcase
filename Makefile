@@ -28,5 +28,6 @@ typecheck:
 
 test:
 	$(PYTHON) -m pytest tests/
+	cd ui && npm test
 
 verify: format lint typecheck test build-ui
