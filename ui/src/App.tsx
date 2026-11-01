@@ -231,9 +231,14 @@ export default function App() {
     );
   const job = state.appJob;
   const step = state.steps.find((item) => item.id === state.step) ?? state.steps[0];
+  // A chapter opened from the menu joins the quick path in its place, so Back and Done move
+  // to its quick neighbours instead of losing their position.
   const path =
     state.pace === "quick"
-      ? state.steps.filter((item) => ["welcome", "catalog", "board", "build"].includes(item.id))
+      ? state.steps.filter(
+          (item) =>
+            item.id === step.id || ["welcome", "catalog", "board", "build"].includes(item.id),
+        )
       : state.steps;
   const index = path.findIndex((item) => item.id === step.id);
   const playing = state.view.playing && !reducedMotion;
