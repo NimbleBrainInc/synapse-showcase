@@ -1,5 +1,6 @@
 """Exercise the optional host through the same MCP contract a host screen uses."""
 
+import pytest
 from fastmcp import Client
 
 from synapse_showcase.guide import Guide
@@ -73,6 +74,32 @@ async def test_host_tools_preserve_confirmation_schema_and_forward_only_valid_in
             ]
             == host.observed["browseConnectorsUrl"]
         )
+
+
+HOST_TOOLS = {
+    "appPlan": ("app_plan", {"app": "crm"}),
+    "appInstall": ("app_install", {"app": "crm", "planHash": "a" * 64, "confirm": True}),
+    "appStatus": ("app_status", {"app": "crm"}),
+    "appLifecycle": ("app_lifecycle", {"app": "crm", "action": "stop"}),
+    "agentSetup": ("guide_agent_setup", {"agent": "codex"}),
+}
+
+
+@pytest.mark.parametrize("disabled", CAPABILITIES)
+async def test_each_unreported_capability_removes_only_its_tool(data_file, disabled):
+    host = FakeHost()
+    host.capabilities[disabled] = False
+    async with Client(Guide(GuideStore(data_file), host).make_server()) as client:
+        names = await tool_names(client)
+        missing, args = HOST_TOOLS[disabled]
+        assert missing not in names
+        assert (await call(client, missing, args)).isError
+        assert disabled not in {method for method, _ in host.calls}
+        enabled = {name for capability, (name, _) in HOST_TOOLS.items() if capability != disabled}
+        assert enabled | {"app_job_status"} <= names
+        await state(client, "app_job_status")
+        status = await state(client, "guide_status")
+        assert status["capabilities"] == {name: name != disabled for name in CAPABILITIES}
 
 
 async def test_host_failure_preserves_saved_guide_actions(data_file):
