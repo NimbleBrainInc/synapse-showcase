@@ -1,9 +1,9 @@
 """Saved guide progress and the practice board, kept as one version 1 JSON file."""
 
+import fcntl
 import json
 import math
 import os
-import time
 import uuid
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -12,8 +12,6 @@ from typing import Any, TypeGuard
 
 from synapse_showcase.content import CATALOG, FOCUS, STEP_IDS, STEPS
 
-# A writer holds the lock for one read and replace, which takes milliseconds.
-STALE_LOCK_SECONDS = 10.0
 UNREADABLE = "The saved walkthrough could not be read. Its file was left unchanged."
 BUSY = "Another guide action is finishing. Read the current state, then try again."
 STATUSES = ("todo", "doing", "done")
@@ -50,9 +48,11 @@ def _compact(state: State) -> str:
 class GuideStore:
     """One saved guide shared by every process that opens the same file.
 
-    Writes take a short lock directory beside the file and replace the file atomically, so an
-    HTTP server and any stdio connection can share progress without losing a change. Reads never
-    rewrite the file, and a file that cannot be read is reported and left as it was.
+    Writes hold an OS lock on a file beside the progress file and replace it atomically, so an
+    HTTP server and any stdio connection can share progress without losing a change. The OS
+    releases the lock when its holder exits, so a stopped writer never strands it and a live one
+    never loses it. Reads never rewrite the file, and a file that cannot be read is reported and
+    left as it was.
     """
 
     def __init__(self, path: str | os.PathLike[str]):
@@ -91,8 +91,12 @@ class GuideStore:
     def change(self, edit: Callable[[State], None]) -> State:
         """Apply one edit under the file lock. An edit that changes nothing writes nothing."""
         self.path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        lock = self.path.with_name(f"{self.path.name}.lock")
-        self._lock(lock)
+        lock = os.open(self.path.with_name(f"{self.path.name}.lock"), os.O_RDWR | os.O_CREAT, 0o600)
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            os.close(lock)
+            raise ValueError(BUSY) from None
         try:
             state = self.read()
             before = _compact(state)
@@ -109,28 +113,9 @@ class GuideStore:
             os.replace(temporary, self.path)
             return state
         finally:
-            os.rmdir(lock)
-
-    def _lock(self, lock: Path) -> None:
-        try:
-            lock.mkdir()
-            return
-        except FileExistsError:
-            pass
-        # A lock older than STALE_LOCK_SECONDS was left by a process that stopped mid-write.
-        # Clear it once and retry; a lock that is still fresh belongs to a live writer.
-        try:
-            held = lock.stat().st_mtime
-        except FileNotFoundError:
-            held = None
-        if held is not None and time.time() - held < STALE_LOCK_SECONDS:
-            raise ValueError(BUSY)
-        try:
-            if held is not None:
-                lock.rmdir()
-            lock.mkdir()
-        except OSError:
-            raise ValueError(BUSY) from None
+            # Closing releases the lock. The lock file stays: removing it would let two writers
+            # lock different files of the same name.
+            os.close(lock)
 
     def step(self, step_id: str, complete: bool = False, skip: bool = False) -> State:
         step = next((item for item in STEPS if item["id"] == step_id), None)
@@ -138,6 +123,9 @@ class GuideStore:
             raise ValueError("Choose a step from guide_status.")
         if complete and skip:
             raise ValueError("A step can be completed or skipped, not both.")
+        if complete and step_id == "agents":
+            # Only guide_connection_check, served to external agents, completes this chapter.
+            raise ValueError("The agents chapter completes when a connected agent checks in.")
 
         def edit(state: State) -> None:
             state["step"] = step_id

@@ -1,8 +1,11 @@
 """Saved progress: refused writes, the writer lock and older saved files."""
 
+import fcntl
 import json
 import math
 import os
+import subprocess
+import sys
 import time
 
 import pytest
@@ -25,22 +28,28 @@ def test_invalid_writes_and_a_live_writer_lock_preserve_saved_bytes(data_file):
             refused()
     assert data_file.read_bytes() == before
 
-    data_file.with_name(f"{data_file.name}.lock").mkdir()
-    with pytest.raises(ValueError, match="Another guide action"):
-        store.add("Do not overwrite")
+    # A live writer keeps the lock however long it pauses.
+    lock = data_file.with_name(f"{data_file.name}.lock")
+    with open(lock, "a") as held:
+        fcntl.flock(held, fcntl.LOCK_EX)
+        old = time.time() - 60
+        os.utime(lock, (old, old))
+        with pytest.raises(ValueError, match="Another guide action"):
+            store.add("Do not overwrite")
     assert data_file.read_bytes() == before
 
 
-def test_a_lock_left_by_a_stopped_writer_is_cleared_once_it_is_stale(data_file):
+def test_a_lock_held_by_a_writer_that_exited_is_released(data_file):
     store = GuideStore(data_file)
     store.step("board")
     lock = data_file.with_name(f"{data_file.name}.lock")
-    lock.mkdir()
-    old = time.time() - 60
-    os.utime(lock, (old, old))
+    holder = (
+        "import fcntl, os, sys; fd = os.open(sys.argv[1], os.O_RDWR | os.O_CREAT); "
+        "fcntl.flock(fd, fcntl.LOCK_EX); os._exit(0)"
+    )
+    subprocess.run([sys.executable, "-c", holder, str(lock)], check=True)
     store.add("After a crash")
     assert store.read()["cards"][-1]["title"] == "After a crash"
-    assert not lock.exists()
 
 
 def test_legacy_preferences_are_read_without_rewriting_and_skipping_is_not_completing(data_file):
