@@ -50,9 +50,9 @@ async def test_host_tools_preserve_confirmation_schema_and_forward_only_valid_in
             "guide_agent_setup",
         } <= tools.keys()
         assert not any(name.startswith("operator_") for name in tools)
-        assert tools["app_install"].annotations.openWorldHint
+        assert tools["app_install"].annotations.open_world_hint
         assert tools["app_install"].meta["ui"]["visibility"] == ["app"]
-        assert tools["app_lifecycle"].annotations.destructiveHint
+        assert tools["app_lifecycle"].annotations.destructive_hint
         for name in ("guide_status", "guide_step", "board_add", "app_install", "app_lifecycle"):
             assert tools[name].meta["ui"]["resourceUri"] == GUIDE_URI
         for args in (
@@ -60,7 +60,7 @@ async def test_host_tools_preserve_confirmation_schema_and_forward_only_valid_in
             {"app": "crm", "planHash": "a" * 64, "confirm": False},
             {"app": "crm", "planHash": "wrong", "confirm": True},
         ):
-            assert (await call(client, "app_install", args)).isError
+            assert (await call(client, "app_install", args)).is_error
         assert not any(method == "appInstall" for method, _ in host.calls)
         approved = {"app": "crm", "planHash": "a" * 64, "confirm": True}
         installed = await state(client, "app_install", {**approved, "extra": "ignored"})
@@ -95,7 +95,7 @@ async def test_each_unreported_capability_removes_only_its_tool(data_file, disab
         names = await tool_names(client)
         missing, args = HOST_TOOLS[disabled]
         assert missing not in names
-        assert (await call(client, missing, args)).isError
+        assert (await call(client, missing, args)).is_error
         assert disabled not in {method for method, _ in host.calls}
         enabled = {name for capability, (name, _) in HOST_TOOLS.items() if capability != disabled}
         assert enabled | {"app_job_status"} <= names
@@ -121,7 +121,7 @@ async def test_host_failure_preserves_saved_guide_actions_and_resource_read(
         data_file.write_text("unreadable personal progress")
         before = len(host.calls)
         read = (await client.read_resource_mcp(GUIDE_URI)).contents[0]
-        assert read.mimeType == "text/html;profile=mcp-app"
+        assert read.mime_type == "text/html;profile=mcp-app"
         assert read.text == ui.joinpath("index.html").read_text()
         assert len(host.calls) == before
     assert data_file.read_text() == "unreadable personal progress"
@@ -155,7 +155,7 @@ async def test_external_endpoint_omits_app_only_install(data_file):
         names = await tool_names(agent)
         assert "app_plan" in names and "app_install" not in names
         approved = {"app": "crm", "planHash": "a" * 64, "confirm": True}
-        assert (await call(agent, "app_install", approved)).isError
+        assert (await call(agent, "app_install", approved)).is_error
 
 
 async def test_standalone_has_no_host_tools_or_capabilities(data_file):
