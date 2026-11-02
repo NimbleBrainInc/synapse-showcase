@@ -1,0 +1,12 @@
+.venv/
+workspace/
+.nimblebrain/
+__pycache__/
+*.pyc
+*.egg-info/
+.ruff_cache/
+.pytest_cache/
+dist/
+build/
+.env
+.env.*
