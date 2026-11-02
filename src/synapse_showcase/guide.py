@@ -3,6 +3,7 @@
 import asyncio
 import contextlib
 import json
+import logging
 import os
 import weakref
 from collections.abc import Awaitable, Callable
@@ -12,18 +13,22 @@ from typing import Any
 from fastmcp import FastMCP
 from fastmcp.resources import FileResource
 from fastmcp.server.middleware import Middleware, MiddlewareContext
+from fastmcp.server.providers.skills import SkillsDirectoryProvider
 from fastmcp.tools import Tool, ToolResult
 from jsonschema import Draft202012Validator
 from jsonschema.exceptions import best_match
-from mcp.types import TextContent, ToolAnnotations
+from mcp.server.connection import Connection
+from mcp.types import ResourceListChangedNotification, TextContent, ToolAnnotations
 from pydantic import Field
 
 from synapse_showcase import __version__
 from synapse_showcase.assets import asset_root
 from synapse_showcase.content import FOCUS, STEP_IDS, STEPS
 from synapse_showcase.host import CAPABILITIES, Host
-from synapse_showcase.skills import Skill, SkillsExtension
+from synapse_showcase.skills import SkillsOnEveryEra
 from synapse_showcase.state import GuideStore
+
+logger = logging.getLogger(__name__)
 
 INSTRUCTIONS = (
     "An optional NimbleBrain guide. Read guide_status first. Follow the person's chosen pace; "
@@ -47,23 +52,12 @@ APP_INSTRUCTIONS = (
 )
 GUIDE_URI = "ui://showcase/guide"
 UI_META = {"ui": {"resourceUri": GUIDE_URI}}
-SKILLS = (
-    Skill(
-        name="guide-skill",
-        uri="skill://showcase/guide/SKILL.md",
-        path=asset_root() / "skills" / "guide" / "SKILL.md",
-        title="Guide the first few steps",
-    ),
-    Skill(
-        name="add-app-skill",
-        uri="skill://showcase/add-app/SKILL.md",
-        path=asset_root() / "skills" / "add-app" / "SKILL.md",
-        title="Add an available app",
-    ),
-)
+# Each folder under skills/ is one skill, served at skill://<folder>/SKILL.md; the folder name
+# must equal the frontmatter name, so a listing entry validates under SEP-2640.
+SKILLS_DIR = asset_root() / "skills"
 SCHEMA = "https://json-schema.org/draft/2020-12/schema"
-READ = ToolAnnotations(readOnlyHint=True, destructiveHint=False, openWorldHint=False)
-WRITE = ToolAnnotations(readOnlyHint=False, destructiveHint=False, openWorldHint=False)
+READ = ToolAnnotations(read_only_hint=True, destructive_hint=False, open_world_hint=False)
+WRITE = ToolAnnotations(read_only_hint=False, destructive_hint=False, open_world_hint=False)
 # Other processes write the same file, so its revision is polled. A file watcher loses the
 # file once an atomic rename replaces it, and its events differ by platform.
 POLL_SECONDS = 0.25
@@ -131,16 +125,19 @@ class Guide:
     """One saved guide served to any number of MCP servers and sessions.
 
     `make_server()` builds the native tool set; `make_server(external=True)` adds the external
-    agent's connection check. While any of them runs, the guide polls the saved revision and
-    announces each change with `notifications/resources/list_changed` on every open session, so
-    a write from any process refreshes every view.
+    agent's connection check. A change is announced with `notifications/resources/list_changed`
+    in two ways. A successful write from a sessionless 2026-07-28 connection, the era NimbleBrain
+    f0fb408 uses, carries the notice on its own answer stream. While any server runs, the guide
+    also polls the saved revision and announces each change on the standing channel of every
+    handshake-era (2025-11-25) connection, so a write from another connection or process reaches
+    those views too.
     """
 
     def __init__(self, store: GuideStore, host: Host | None = None):
         self.store = store
         self.host = host
         self.listeners: set[Callable[[], None]] = set()
-        self._sessions: weakref.WeakSet[Any] = weakref.WeakSet()
+        self._connections: weakref.WeakSet[Connection] = weakref.WeakSet()
         self._users = 0
         self._watcher: asyncio.Task[None] | None = None
         self._last: int | None = None
@@ -205,8 +202,14 @@ class Guide:
         server = FastMCP(
             "showcase", instructions=instructions, version=__version__, lifespan=self._lifespan
         )
-        server.add_middleware(_Sessions(self))
-        for item in self._tools(external):
+        tools = self._tools(external)
+        writes = {
+            item.name
+            for item in tools
+            if not (item.annotations and item.annotations.read_only_hint)
+        }
+        server.add_middleware(_ChangeNotices(self, writes))
+        for item in tools:
             server.add_tool(item)
         directory = Path(os.environ.get("SHOWCASE_UI_DIR", asset_root() / "ui" / "dist"))
         server.add_resource(
@@ -219,7 +222,9 @@ class Guide:
                 is_binary=False,
             )
         )
-        SkillsExtension(SKILLS).install(server)
+        skills = SkillsDirectoryProvider(SKILLS_DIR, experimental_skills=True)
+        server.add_provider(skills)
+        server.add_extension(SkillsOnEveryEra(providers=[skills]))
         return server
 
     def _tools(self, external: bool) -> list[GuideTool]:
@@ -410,7 +415,9 @@ class Guide:
                         "confirm": {"type": "boolean", "const": True},
                     },
                     ("app", "planHash", "confirm"),
-                    ToolAnnotations(readOnlyHint=False, destructiveHint=False, openWorldHint=True),
+                    ToolAnnotations(
+                        read_only_hint=False, destructive_hint=False, open_world_hint=True
+                    ),
                     # An install can restart NimbleBrain, so only the person's click in Showcase
                     # makes one. NimbleBrain refuses agent calls to app-only tools.
                     {"ui": {**UI_META["ui"], "visibility": ["app"]}},
@@ -437,7 +444,9 @@ class Guide:
                     invoke("appLifecycle"),
                     {"app": app, "action": {"type": "string", "enum": ["start", "stop"]}},
                     ("app", "action"),
-                    ToolAnnotations(readOnlyHint=False, destructiveHint=True, openWorldHint=False),
+                    ToolAnnotations(
+                        read_only_hint=False, destructive_hint=True, open_world_hint=False
+                    ),
                     UI_META,
                 ),
             ),
@@ -465,12 +474,15 @@ class Guide:
         ]
 
     async def notify(self) -> None:
-        """Tell every open session, then every listener, that the saved guide changed."""
-        for session in list(self._sessions):
+        """Tell every open connection, then every listener, that the saved guide changed."""
+        notice = ResourceListChangedNotification().model_dump(
+            by_alias=True, mode="json", exclude_none=True
+        )
+        for connection in list(self._connections):
             try:
-                await session.send_resource_list_changed()
+                await connection.outbound.notify(notice["method"], notice.get("params"))
             except Exception:
-                self._sessions.discard(session)
+                self._connections.discard(connection)
         for listener in list(self.listeners):
             listener()
 
@@ -529,13 +541,43 @@ class Guide:
                 await self.notify()
 
 
-class _Sessions(Middleware):
-    """Remember each initialized session so a saved change reaches all of them."""
+class _ChangeNotices(Middleware):
+    """Remember each handshake-era connection and bind a notice to every other client's write.
 
-    def __init__(self, guide: Guide):
+    mcp 2 hands a middleware a per-request session proxy; the connection behind it lives as long
+    as the client. A handshake-era (2025-11-25) connection owns the standing channel the guide's
+    broadcast travels on. A sessionless 2026-07-28 client never initializes and has no such
+    channel, so each of its successful writes carries one notice bound to the call: an SSE answer
+    delivers it before the result. A remembered connection gets no bound notice, since the
+    broadcast already reaches it, so a writer hears one notice per write in either era.
+    """
+
+    def __init__(self, guide: Guide, writes: set[str]):
         self._guide = guide
+        self._writes = writes
 
     async def on_initialize(self, context: MiddlewareContext, call_next):
         if context.fastmcp_context is not None:
-            self._guide._sessions.add(context.fastmcp_context.session)
+            # The proxy keeps its connection in `_connection`; FastMCP reads it the same way.
+            connection = getattr(context.fastmcp_context.session, "_connection", None)
+            if isinstance(connection, Connection):
+                self._guide._connections.add(connection)
         return await call_next(context)
+
+    async def on_call_tool(self, context: MiddlewareContext, call_next):
+        result = await call_next(context)
+        ctx = context.fastmcp_context
+        name = context.message.name
+        if ctx is None or result.is_error or name not in self._writes:
+            return result
+        if getattr(ctx.session, "_connection", None) in self._guide._connections:
+            return result
+        try:
+            # A JSON answer has no room for it and mcp drops it; the write still succeeds.
+            await ctx.session.send_notification(
+                ResourceListChangedNotification(), related_request_id=ctx.request_id
+            )
+        except Exception:
+            # The write is already saved; a lost notice only delays a refresh.
+            logger.warning("Could not send resources/list_changed after %s", name, exc_info=True)
+        return result

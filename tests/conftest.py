@@ -45,14 +45,14 @@ def server_module(tmp_path, monkeypatch):
 async def call(
     client: Client, name: str, arguments: dict[str, Any] | None = None
 ) -> CallToolResult:
-    """Call a tool and return the raw MCP result, so an isError result can be inspected."""
+    """Call a tool and return the raw MCP result, so an is_error result can be inspected."""
     return await client.call_tool_mcp(name, arguments or {})
 
 
 async def state(client: Client, name: str, arguments: dict[str, Any] | None = None) -> Any:
     result = await call(client, name, arguments)
-    assert not result.isError, result.content
-    return result.structuredContent
+    assert not result.is_error, result.content
+    return result.structured_content
 
 
 async def tool_names(client: Client) -> set[str]:
