@@ -41,14 +41,16 @@ INSTRUCTIONS = (
     "not prove a provider-backed chat works."
 )
 APP_INSTRUCTIONS = (
-    " Apps such as Todo Board and CRM have screens inside NimbleBrain. Read app_plan to review "
-    "source, locked dependencies, local server, workspace connection, prerequisites and possible "
-    "managed-runtime restart. The person chooses Review, then Install or Connect, in Showcase; "
-    "only that click calls app_install. Installation returns a host job, which can outlast a "
-    "managed-runtime restart. Poll app_job_status and report ready only after verified tools and "
-    "UI. Adding an app does not authorize external accounts or expand existing external data "
-    "access. Missing host prerequisites and package policy approvals belong to the operator; "
-    "never change package policy or acquire provider keys."
+    " Apps such as Todo Board and CRM have screens inside NimbleBrain. This walkthrough uses "
+    "apps already enabled by the operator. Read app_status when available, then help the person "
+    "open a ready app and try a small action. Status alone does not prove their workflow. "
+    "Software acquisition, dependencies, catalog enablement, instance configuration and server "
+    "lifecycle belong to the supported external operator flow, including local connections "
+    "that change configuration or restart the runtime. Even when advertised, do not invoke "
+    "app_install or app_lifecycle from the walkthrough or direct the person to those actions "
+    "inside Showcase. Use available operator guidance; never invent setup commands or acquire "
+    "provider keys. Enabled hosted connectors use their native Connect and consent flow. "
+    "Adding a local app grants no external account or data-source access."
 )
 GUIDE_URI = "ui://showcase/guide"
 UI_META = {"ui": {"resourceUri": GUIDE_URI}}
