@@ -9,7 +9,7 @@ const host = vi.hoisted(() => ({
   dataSync: undefined as undefined | (() => unknown),
 }));
 vi.mock("@nimblebrain/synapse/react", () => ({
-  useApp: () => ({ callTool: host.callTool, openLink: host.openLink }),
+  useApp: () => host,
   useDataSync: (callback: () => unknown) => {
     host.dataSync = callback;
   },
@@ -102,6 +102,56 @@ test("a change notice refreshes the guide without clearing an unsent draft", asy
   });
   expect(await screen.findByText("Added by agent")).toBeTruthy();
   expect((screen.getByLabelText("New practice task") as HTMLInputElement).value).toBe("Unsent idea");
+});
+
+test("practice tasks use click and Enter without a native form submission", async () => {
+  current = guide({ step: "board" });
+  render(<App />);
+  const draft = await screen.findByLabelText("New practice task") as HTMLInputElement;
+  const add = screen.getByRole("button", { name: "Add task" }) as HTMLButtonElement;
+  // jsdom does not enforce the host iframe's missing allow-forms permission.
+  expect(draft.closest("form")).toBeNull();
+  expect(add.type).toBe("button");
+
+  fireEvent.change(draft, { target: { value: "From the button" } });
+  fireEvent.click(add);
+  await waitFor(() => expect(draft.value).toBe(""));
+  fireEvent.change(draft, { target: { value: "From Enter" } });
+  fireEvent.keyDown(draft, { key: "Enter" });
+  await waitFor(() => expect(draft.value).toBe(""));
+  expect(calls.filter(([name]) => name === "board_add")).toEqual([
+    ["board_add", { title: "From the button" }],
+    ["board_add", { title: "From Enter" }],
+  ]);
+});
+
+test("practice tasks reject empty, composing and duplicate submissions and retain failed drafts", async () => {
+  current = guide({ step: "board" });
+  let fail!: (error: Error) => void;
+  const pending = new Promise<never>((_, reject) => { fail = reject; });
+  host.callTool.mockImplementation(async (name: string, args: Record<string, unknown>) => {
+    calls.push([name, args]);
+    return name === "board_add" ? pending : ok(current);
+  });
+  render(<App />);
+  const draft = await screen.findByLabelText("New practice task") as HTMLInputElement;
+  const add = screen.getByRole("button", { name: "Add task" }) as HTMLButtonElement;
+  fireEvent.change(draft, { target: { value: "  " } });
+  fireEvent.keyDown(draft, { key: "Enter" });
+  expect(add.disabled).toBe(true);
+  fireEvent.change(draft, { target: { value: "Keep this draft" } });
+  fireEvent.keyDown(draft, { key: "Enter", isComposing: true });
+  expect(calls.some(([name]) => name === "board_add")).toBe(false);
+
+  fireEvent.click(add);
+  fireEvent.keyDown(draft, { key: "Enter" });
+  fireEvent.click(add);
+  expect(add.disabled).toBe(true);
+  expect(calls.filter(([name]) => name === "board_add")).toHaveLength(1);
+  await act(async () => { fail(new Error("Practice board unavailable")); });
+  expect(await screen.findByRole("alert")).toBeTruthy();
+  expect(draft.value).toBe("Keep this draft");
+  expect(add.disabled).toBe(false);
 });
 
 test("an app the host will not plan cannot be reviewed for installation", async () => {

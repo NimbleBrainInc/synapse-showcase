@@ -157,6 +157,10 @@ export default function App() {
       setBusy(false);
     }
   };
+  const addTask = async () => {
+    if (busy || !taskTitle.trim()) return;
+    if (await change("board_add", { title: taskTitle }, "Task added.")) setTaskTitle("");
+  };
   const inspect = async (action: () => Promise<void>) => {
     if (operation.current) return;
     operation.current = true;
@@ -302,26 +306,26 @@ export default function App() {
               </Card>
             ))}
           {status === "todo" && (
-            <form
-              onSubmit={(event) => {
-                event.preventDefault();
-                void change("board_add", { title: taskTitle }, "Task added.").then((ok) => {
-                  if (ok) setTaskTitle("");
-                });
-              }}
-            >
+            // The host iframe blocks native form submissions.
+            <div className="practice-task-entry">
               <label className="field-label">
                 New practice task
                 <input
                   value={taskTitle}
                   maxLength={120}
                   onChange={(event) => setTaskTitle(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" && !event.nativeEvent.isComposing) {
+                      event.preventDefault();
+                      void addTask();
+                    }
+                  }}
                 />
               </label>
-              <Button disabled={busy || !taskTitle.trim()} type="submit">
+              <Button disabled={busy || !taskTitle.trim()} type="button" onClick={() => void addTask()}>
                 Add task
               </Button>
-            </form>
+            </div>
           )}
         </Card>
       ))}
