@@ -47,11 +47,12 @@ directly does not supply the MCP bridge.
 
 Progress and sample cards are stored in one JSON file. Select it with `--data-file` or
 `SHOWCASE_DATA_FILE`; otherwise it is `showcase/progress.json` under `MPAK_WORKSPACE`, or under
-the current directory. Every process sharing that file sees the same progress. Each successful
-write from a sessionless 2026-07-28 connection, the era NimbleBrain f0fb408 uses, carries a
-change notice on its own answer, and each saved change is announced to every connection on the
-2025-11-25 handshake era. The practice board is separate from NimbleBrain Tasks and installed
-apps.
+the current directory. Every process sharing that file sees the same progress. Saved changes
+reach 2026-07-28 clients through `subscriptions/listen` with `resourcesListChanged`, and
+2025-11-25 clients through their standing channels. A successful sessionless write also carries
+a notice on its own answer, including when its client has not subscribed. Reconnect the host
+after upgrading so it opens a fresh subscription. The practice board is separate from
+NimbleBrain Tasks and installed apps.
 
 A standalone guide works without an installer. A local installer can supply the
 optional app planning, installation, status and external-agent setup capabilities through the

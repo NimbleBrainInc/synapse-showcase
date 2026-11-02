@@ -16,8 +16,10 @@ from fastmcp.skills.models import (
     ListSkillsRequest,
     ListSkillsResult,
 )
+from mcp.client.subscriptions import ResourcesListChanged, listen
 from mcp.types import ResourceListChangedNotification
 
+import synapse_showcase.guide
 import synapse_showcase.skills
 from synapse_showcase.guide import Guide
 from synapse_showcase.loopback import create_http_app
@@ -163,8 +165,7 @@ async def test_persisted_writes_announce_a_change_and_reads_do_not(data_file):
         if isinstance(message, ResourceListChangedNotification):
             announced.append(message)
 
-    # The native view speaks the handshake era, whose standing channel carries the notice of
-    # another client's write; a sessionless 2026-07-28 view hears only its own writes.
+    # Handshake-era views receive another client's writes on their standing channel.
     async with (
         Client(guide.make_server(), mode="legacy", message_handler=receive) as native,
         Client(guide.make_server(external=True)) as agent,
@@ -206,6 +207,73 @@ async def test_a_handshake_era_http_session_hears_an_agent_write_on_its_standing
             await eventually(lambda: announced, timeout=2)
             await asyncio.sleep(0.3)
             assert len(announced) == 1, "exactly one notice for one write"
+
+
+def test_an_existing_subscription_handler_is_not_replaced(data_file, monkeypatch):
+    guide = Guide(GuideStore(data_file))
+    server = guide.make_server()
+    registered = server._mcp_server.get_request_handler("subscriptions/listen")
+    monkeypatch.setattr(synapse_showcase.guide, "FastMCP", lambda *args, **kwargs: server)
+    with pytest.raises(RuntimeError, match="already handles subscriptions/listen"):
+        guide.make_server()
+    assert server._mcp_server.get_request_handler("subscriptions/listen") is registered
+
+
+async def test_a_modern_native_subscription_hears_the_external_connection_check(data_file):
+    async with serve(create_http_app(Guide(GuideStore(data_file)))) as base:
+        async with over_http(base) as native, over_http(base, "/agent/mcp") as agent:
+            assert native.protocol_version == agent.protocol_version == "2026-07-28"
+            before = await state(native, "guide_status")
+            async with listen(native.session, resources_list_changed=True) as subscription:
+                assert subscription.honored.model_dump(by_alias=True, exclude_none=True) == {
+                    "resourcesListChanged": True
+                }
+                checked = await state(agent, "guide_connection_check")
+                assert isinstance(
+                    await asyncio.wait_for(anext(subscription), 3), ResourcesListChanged
+                )
+                current = await state(native, "guide_status")
+                assert current == checked
+                assert current["revision"] > before["revision"]
+                assert "agents" in current["completed"]
+                assert current["agentCheck"]
+
+
+async def test_subscriptions_do_not_cross_between_guides(tmp_path):
+    first = Guide(GuideStore(tmp_path / "first.json"))
+    second = Guide(GuideStore(tmp_path / "second.json"))
+    async with (
+        serve(create_http_app(first)) as first_base,
+        serve(create_http_app(second)) as second_base,
+    ):
+        async with (
+            over_http(first_base) as first_native,
+            over_http(first_base, "/agent/mcp") as first_agent,
+            over_http(second_base) as second_native,
+            over_http(second_base, "/agent/mcp") as second_agent,
+            listen(first_native.session, resources_list_changed=True) as first_subscription,
+            listen(second_native.session, resources_list_changed=True) as second_subscription,
+        ):
+            assert first_subscription.honored.resources_list_changed is True
+            assert second_subscription.honored.resources_list_changed is True
+            before = await state(second_native, "guide_status")
+            waiting = asyncio.create_task(anext(second_subscription))
+            try:
+                await state(first_agent, "board_add", {"title": "Only in the first guide"})
+                assert isinstance(
+                    await asyncio.wait_for(anext(first_subscription), 3), ResourcesListChanged
+                )
+                done, _ = await asyncio.wait({waiting}, timeout=0.3)
+                assert not done, "another guide's write must not reach this subscription"
+                assert await state(second_native, "guide_status") == before
+                changed = await state(
+                    second_agent, "board_add", {"title": "Only in the second guide"}
+                )
+                assert isinstance(await asyncio.wait_for(waiting, 3), ResourcesListChanged)
+                assert await state(second_native, "guide_status") == changed
+            finally:
+                waiting.cancel()
+                await asyncio.gather(waiting, return_exceptions=True)
 
 
 def answered_as(app, answers: list[tuple[str | None, bytes]]):
