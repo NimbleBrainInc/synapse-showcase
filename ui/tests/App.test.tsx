@@ -53,9 +53,15 @@ beforeEach(() => {
   );
   host.callTool.mockImplementation(async (name: string, args: Record<string, unknown>) => {
     calls.push([name, args]);
-    if (name === "guide_step" && !("complete" in args))
-      current = { ...current, revision: current.revision + 1, step: String(args.step) };
-    else if (name !== "guide_status") current = { ...current, revision: current.revision + 1 };
+    if (name === "guide_step") {
+      if (args.step === "agents" && args.complete === true) {
+        return { isError: true, content: [{ type: "text", text: "Only the connection check completes agents." }] };
+      }
+      const step = String(args.step);
+      current = { ...current, revision: current.revision + 1, step };
+      if (args.complete) current.completed = [...current.completed, step];
+      if (args.skip && !current.completed.includes(step)) current.skipped = [...current.skipped, step];
+    } else if (name !== "guide_status") current = { ...current, revision: current.revision + 1 };
     return ok(current);
   });
 });
@@ -74,6 +80,7 @@ test("quick pace: a chapter opened from the menu moves on to its quick neighbour
   fireEvent.click(screen.getByRole("button", { name: "Done, continue" }));
   await waitFor(() => expect(current.step).toBe("board"));
   expect(calls).toContainEqual(["guide_step", { step: "control", complete: true, skip: false }]);
+  expect(current.completed).toContain("control");
   expect(calls.some(([name, args]) => name === "guide_step" && args.step === "welcome")).toBe(
     false,
   );
@@ -84,6 +91,56 @@ test("quick pace: Back from an opened chapter returns to the previous quick chap
   render(<App />);
   fireEvent.click(await screen.findByRole("button", { name: "Back" }));
   await waitFor(() => expect(current.step).toBe("board"));
+});
+
+test.each(["guided", "quick"] as const)("the unchecked agents chapter continues honestly in %s pace", async (pace) => {
+  current = guide({ step: "agents", pace });
+  render(<App />);
+  const continueWithout = await screen.findByRole("button", { name: "Continue without an agent" });
+  expect(screen.queryByRole("button", { name: "Skip for now" })).toBeNull();
+  fireEvent.click(continueWithout);
+  await waitFor(() => expect(current.step).toBe("build"));
+  expect(current.skipped).toEqual(["agents"]);
+  expect(current.completed).not.toContain("agents");
+  expect(current.agentCheck).toBeUndefined();
+  expect(calls.filter(([name]) => name !== "guide_status")).toEqual([
+    ["guide_step", { step: "agents", complete: false, skip: true }],
+    ["guide_step", { step: "build" }],
+  ]);
+});
+
+test("a checked agents chapter only navigates and preserves the check", async () => {
+  const checkedAt = "2026-01-01T00:00:00.000Z";
+  current = guide({ step: "agents", completed: ["agents"], agentCheck: checkedAt });
+  render(<App />);
+  fireEvent.click(await screen.findByRole("button", { name: /^Continue$/ }));
+  await waitFor(() => expect(current.step).toBe("build"));
+  expect(current.completed).toEqual(["agents"]);
+  expect(current.skipped).toEqual([]);
+  expect(current.agentCheck).toBe(checkedAt);
+  expect(calls.filter(([name]) => name !== "guide_status")).toEqual([
+    ["guide_step", { step: "build" }],
+  ]);
+});
+
+test("a refused agents skip stays on the chapter and shows the error", async () => {
+  current = guide({ step: "agents" });
+  host.callTool.mockImplementation(async (name: string, args: Record<string, unknown>) => {
+    calls.push([name, args]);
+    return name === "guide_step"
+      ? { isError: true, content: [{ type: "text", text: "Progress could not be saved." }] }
+      : ok(current);
+  });
+  render(<App />);
+  fireEvent.click(await screen.findByRole("button", { name: "Continue without an agent" }));
+  expect((await screen.findByRole("alert")).textContent).toContain("Progress could not be saved.");
+  expect(current.step).toBe("agents");
+  expect(current.skipped).toEqual([]);
+  expect(current.completed).toEqual([]);
+  expect(current.agentCheck).toBeUndefined();
+  expect(calls.filter(([name]) => name !== "guide_status")).toEqual([
+    ["guide_step", { step: "agents", complete: false, skip: true }],
+  ]);
 });
 
 test("a change notice refreshes the guide without clearing an unsent draft", async () => {

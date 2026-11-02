@@ -247,9 +247,15 @@ export default function App() {
   const index = path.findIndex((item) => item.id === step.id);
   const playing = state.view.playing && !reducedMotion;
   const installing = Boolean(job && ["queued", "running"].includes(job.state));
+  const agentStep = step.id === "agents";
   const navigate = (id: string) => change("guide_step", { step: id });
   const next = async (skip = false) => {
-    if (await change("guide_step", { step: step.id, complete: !skip, skip }, "Progress saved.")) {
+    const skipStep = skip || agentStep;
+    // Only the external connection check completes the agents chapter.
+    if (
+      (agentStep && state.agentCheck) ||
+      await change("guide_step", { step: step.id, complete: !skipStep, skip: skipStep }, "Progress saved.")
+    ) {
       const target = path[index + 1];
       if (target) await navigate(target.id);
     }
@@ -898,11 +904,15 @@ export default function App() {
                 >
                   Back
                 </Button>
-                <Button variant="ghost" disabled={busy} onClick={() => void next(true)}>
-                  Skip for now
-                </Button>
+                {!agentStep && (
+                  <Button variant="ghost" disabled={busy} onClick={() => void next(true)}>
+                    Skip for now
+                  </Button>
+                )}
                 <Button variant="primary" disabled={busy} onClick={() => void next()}>
-                  {path[index + 1] ? "Done, continue" : "Finish the guide"}
+                  {agentStep
+                    ? state.agentCheck ? "Continue" : "Continue without an agent"
+                    : path[index + 1] ? "Done, continue" : "Finish the guide"}
                 </Button>
               </footer>
               <label className="motion-preference">
