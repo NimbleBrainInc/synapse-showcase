@@ -2,6 +2,7 @@
 
 import asyncio
 import hashlib
+import json
 
 import pytest
 from fastmcp import Client
@@ -24,8 +25,8 @@ from synapse_showcase.state import GuideStore
 from tests.conftest import PROJECT_ROOT, call, eventually, over_http, serve, state, tool_names
 
 SKILLS_EXTENSION = "io.modelcontextprotocol/skills"
-# NimbleBrain negotiates 2025-11-25 through the initialize handshake today; a modern client
-# discovers the sessionless 2026-07-28 era. Skills must answer on both.
+# NimbleBrain f0fb408 discovers the sessionless 2026-07-28 era; an older client initializes on
+# 2025-11-25. Skills must answer on both.
 ERAS = [("legacy", "2025-11-25"), ("auto", "2026-07-28")]
 
 
@@ -162,8 +163,8 @@ async def test_persisted_writes_announce_a_change_and_reads_do_not(data_file):
         if isinstance(message, ResourceListChangedNotification):
             announced.append(message)
 
-    # A change notice needs a standing session, so the native view speaks the handshake era the
-    # NimbleBrain host negotiates; a sessionless 2026-07-28 connection has no channel for it.
+    # The native view speaks the handshake era, whose standing channel carries the notice of
+    # another client's write; a sessionless 2026-07-28 view hears only its own writes.
     async with (
         Client(guide.make_server(), mode="legacy", message_handler=receive) as native,
         Client(guide.make_server(external=True)) as agent,
@@ -205,6 +206,82 @@ async def test_a_handshake_era_http_session_hears_an_agent_write_on_its_standing
             await eventually(lambda: announced, timeout=2)
             await asyncio.sleep(0.3)
             assert len(announced) == 1, "exactly one notice for one write"
+
+
+def answered_as(app, answers: list[tuple[str | None, bytes]]):
+    """Wrap an ASGI app to record each POST's tool name (or method) and its content type."""
+
+    async def observed(scope, receive, send):
+        if scope["type"] != "http" or scope["method"] != "POST":
+            return await app(scope, receive, send)
+        body = bytearray()
+
+        async def read():
+            message = await receive()
+            body.extend(message.get("body", b""))
+            return message
+
+        async def write(message):
+            if message["type"] == "http.response.start":
+                request = json.loads(body)
+                name = (request.get("params") or {}).get("name") or request.get("method")
+                answers.append((name, dict(message["headers"]).get(b"content-type", b"")))
+            await send(message)
+
+        await app(scope, read, write)
+
+    return observed
+
+
+async def test_a_sessionless_agent_write_answered_as_sse_carries_exactly_one_notice(data_file):
+    announced: list[ResourceListChangedNotification] = []
+    answers: list[tuple[str | None, bytes]] = []
+
+    async def receive(message):
+        if isinstance(message, ResourceListChangedNotification):
+            announced.append(message)
+
+    # NimbleBrain f0fb408 connects in the sessionless 2026-07-28 era: no standing channel, so
+    # the notice rides the write's own answer, which then commits to text/event-stream.
+    app = answered_as(create_http_app(Guide(GuideStore(data_file))), answers)
+    async with serve(app) as base, over_http(base, message_handler=receive) as agent:
+        assert agent.protocol_version == "2026-07-28"
+        await state(agent, "guide_status")
+        await asyncio.sleep(0.3)
+        assert announced == []
+        await state(agent, "guide_step", {"step": "welcome", "complete": True})
+        assert len(announced) == 1, "the notice arrives with the write's answer"
+        refused = await call(agent, "board_move", {"id": "missing", "status": "done"})
+        assert refused.is_error
+        await asyncio.sleep(0.6)
+        assert len(announced) == 1, "exactly one notice for one write, none for a refused one"
+    calls = [
+        (name, kind)
+        for name, kind in answers
+        if name in ("guide_status", "guide_step", "board_move")
+    ]
+    assert calls == [
+        ("guide_status", b"application/json"),
+        ("guide_step", b"text/event-stream"),
+        ("board_move", b"application/json"),
+    ]
+
+
+async def test_a_handshake_era_writer_hears_its_own_write_once(data_file):
+    announced: list[ResourceListChangedNotification] = []
+
+    async def receive(message):
+        if isinstance(message, ResourceListChangedNotification):
+            announced.append(message)
+
+    # The standing-channel broadcast already reaches a handshake-era writer, so its write call
+    # carries no second notice.
+    async with serve(create_http_app(Guide(GuideStore(data_file)))) as base:
+        async with over_http(base, mode="legacy", message_handler=receive) as native:
+            await state(native, "board_add", {"title": "Written by the handshake era"})
+            await eventually(lambda: announced, timeout=2)
+            await asyncio.sleep(0.6)
+            assert len(announced) == 1
 
 
 async def test_the_module_server_saves_progress_in_the_mpak_workspace(server_module, tmp_path):

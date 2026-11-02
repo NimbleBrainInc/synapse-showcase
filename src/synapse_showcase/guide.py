@@ -3,6 +3,7 @@
 import asyncio
 import contextlib
 import json
+import logging
 import os
 import weakref
 from collections.abc import Awaitable, Callable
@@ -26,6 +27,8 @@ from synapse_showcase.content import FOCUS, STEP_IDS, STEPS
 from synapse_showcase.host import CAPABILITIES, Host
 from synapse_showcase.skills import SkillsOnEveryEra
 from synapse_showcase.state import GuideStore
+
+logger = logging.getLogger(__name__)
 
 INSTRUCTIONS = (
     "An optional NimbleBrain guide. Read guide_status first. Follow the person's chosen pace; "
@@ -122,10 +125,12 @@ class Guide:
     """One saved guide served to any number of MCP servers and sessions.
 
     `make_server()` builds the native tool set; `make_server(external=True)` adds the external
-    agent's connection check. While any of them runs, the guide polls the saved revision and
-    announces each change with `notifications/resources/list_changed` on every handshake-era
-    connection, so a write from any process refreshes every view that holds a standing channel;
-    a sessionless 2026-07-28 connection gets no notice and reads again on its own.
+    agent's connection check. A change is announced with `notifications/resources/list_changed`
+    in two ways. A successful write from a sessionless 2026-07-28 connection, the era NimbleBrain
+    f0fb408 uses, carries the notice on its own answer stream. While any server runs, the guide
+    also polls the saved revision and announces each change on the standing channel of every
+    handshake-era (2025-11-25) connection, so a write from another connection or process reaches
+    those views too.
     """
 
     def __init__(self, store: GuideStore, host: Host | None = None):
@@ -197,8 +202,14 @@ class Guide:
         server = FastMCP(
             "showcase", instructions=instructions, version=__version__, lifespan=self._lifespan
         )
-        server.add_middleware(_Connections(self))
-        for item in self._tools(external):
+        tools = self._tools(external)
+        writes = {
+            item.name
+            for item in tools
+            if not (item.annotations and item.annotations.read_only_hint)
+        }
+        server.add_middleware(_ChangeNotices(self, writes))
+        for item in tools:
             server.add_tool(item)
         directory = Path(os.environ.get("SHOWCASE_UI_DIR", asset_root() / "ui" / "dist"))
         server.add_resource(
@@ -530,16 +541,20 @@ class Guide:
                 await self.notify()
 
 
-class _Connections(Middleware):
-    """Remember each handshake-era connection so a saved change reaches every open client.
+class _ChangeNotices(Middleware):
+    """Remember each handshake-era connection and bind a notice to every other client's write.
 
     mcp 2 hands a middleware a per-request session proxy; the connection behind it lives as long
-    as the client and owns the standing channel a notice travels on. A sessionless 2026-07-28
-    client never initializes and has no such channel; it reads the guide again on its own.
+    as the client. A handshake-era (2025-11-25) connection owns the standing channel the guide's
+    broadcast travels on. A sessionless 2026-07-28 client never initializes and has no such
+    channel, so each of its successful writes carries one notice bound to the call: an SSE answer
+    delivers it before the result. A remembered connection gets no bound notice, since the
+    broadcast already reaches it, so a writer hears one notice per write in either era.
     """
 
-    def __init__(self, guide: Guide):
+    def __init__(self, guide: Guide, writes: set[str]):
         self._guide = guide
+        self._writes = writes
 
     async def on_initialize(self, context: MiddlewareContext, call_next):
         if context.fastmcp_context is not None:
@@ -548,3 +563,21 @@ class _Connections(Middleware):
             if isinstance(connection, Connection):
                 self._guide._connections.add(connection)
         return await call_next(context)
+
+    async def on_call_tool(self, context: MiddlewareContext, call_next):
+        result = await call_next(context)
+        ctx = context.fastmcp_context
+        name = context.message.name
+        if ctx is None or result.is_error or name not in self._writes:
+            return result
+        if getattr(ctx.session, "_connection", None) in self._guide._connections:
+            return result
+        try:
+            # A JSON answer has no room for it and mcp drops it; the write still succeeds.
+            await ctx.session.send_notification(
+                ResourceListChangedNotification(), related_request_id=ctx.request_id
+            )
+        except Exception:
+            # The write is already saved; a lost notice only delays a refresh.
+            logger.warning("Could not send resources/list_changed after %s", name, exc_info=True)
+        return result

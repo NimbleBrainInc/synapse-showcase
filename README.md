@@ -37,9 +37,9 @@ The tools are `guide_status`, `guide_step`, `guide_preferences`, `guide_view`, `
 an external agent called the guide. It does not verify a model provider or a chat reply. The
 guide skill is served through the MCP Skills extension (`skills/list`, `skills/get` and
 `resources/read`) at `skill://showcase-guide/SKILL.md`. FastMCP binds those two methods to the
-2026-07-28 protocol era; Showcase answers them on the 2025-11-25 handshake era as well, which is
-what NimbleBrain negotiates today. Each folder under `skills/` is one skill and is named after
-its frontmatter `name`.
+2026-07-28 protocol era, which NimbleBrain f0fb408 uses; Showcase answers them on the 2025-11-25
+handshake era as well, so older clients keep working. Each folder under `skills/` is one skill
+and is named after its frontmatter `name`.
 
 The screen is the MCP resource `ui://showcase/guide`, served as
 `text/html;profile=mcp-app`. A host must support MCP Apps to render it; opening the built HTML
@@ -47,10 +47,11 @@ directly does not supply the MCP bridge.
 
 Progress and sample cards are stored in one JSON file. Select it with `--data-file` or
 `SHOWCASE_DATA_FILE`; otherwise it is `showcase/progress.json` under `MPAK_WORKSPACE`, or under
-the current directory. Every process sharing that file sees the same progress, and each saved
-change is announced to every connection that negotiated the 2025-11-25 handshake era; a
-sessionless 2026-07-28 connection has no standing channel for a notice and reads again on its own. The practice board is separate from NimbleBrain
-Tasks and installed apps.
+the current directory. Every process sharing that file sees the same progress. Each successful
+write from a sessionless 2026-07-28 connection, the era NimbleBrain f0fb408 uses, carries a
+change notice on its own answer, and each saved change is announced to every connection on the
+2025-11-25 handshake era. The practice board is separate from NimbleBrain Tasks and installed
+apps.
 
 A standalone guide works without an installer. A local installer can supply the
 optional app planning, installation, status and external-agent setup capabilities through the
