@@ -18,7 +18,9 @@ from fastmcp.tools import Tool, ToolResult
 from jsonschema import Draft202012Validator
 from jsonschema.exceptions import best_match
 from mcp.server.connection import Connection
+from mcp.server.subscriptions import InMemorySubscriptionBus, ListenHandler, ResourcesListChanged
 from mcp.types import ResourceListChangedNotification, TextContent, ToolAnnotations
+from mcp_types import SubscriptionsListenRequestParams
 from pydantic import Field
 
 from synapse_showcase import __version__
@@ -74,6 +76,19 @@ def failure(message: str) -> ToolResult:
     return ToolResult(content=[TextContent(type="text", text=message)], is_error=True)
 
 
+def _share_changes(server: FastMCP, bus: InMemorySubscriptionBus) -> None:
+    # FastMCP 4.1 has no public subscription hook. Keep its private accessor here;
+    # the SDK owns validation, acknowledgments, filtering and stream cleanup.
+    sdk_server = server._mcp_server
+    if sdk_server.get_request_handler("subscriptions/listen") is not None:
+        raise RuntimeError(
+            "FastMCP already handles subscriptions/listen; review shared guide updates."
+        )
+    sdk_server.add_request_handler(
+        "subscriptions/listen", SubscriptionsListenRequestParams, ListenHandler(bus)
+    )
+
+
 class GuideTool(Tool):
     """A tool with a written-out schema, so an omitted argument stays distinct from null."""
 
@@ -125,12 +140,10 @@ class Guide:
     """One saved guide served to any number of MCP servers and sessions.
 
     `make_server()` builds the native tool set; `make_server(external=True)` adds the external
-    agent's connection check. A change is announced with `notifications/resources/list_changed`
-    in two ways. A successful write from a sessionless 2026-07-28 connection, the era NimbleBrain
-    f0fb408 uses, carries the notice on its own answer stream. While any server runs, the guide
-    also polls the saved revision and announces each change on the standing channel of every
-    handshake-era (2025-11-25) connection, so a write from another connection or process reaches
-    those views too.
+    agent's connection check. While any server runs, saved revision changes reach subscribed
+    2026-07-28 clients through one bus shared by this guide's servers, and handshake-era clients
+    through their standing channels. A successful sessionless write also carries a notice on
+    its own answer stream, including when that client has not subscribed.
     """
 
     def __init__(self, store: GuideStore, host: Host | None = None):
@@ -138,6 +151,7 @@ class Guide:
         self.host = host
         self.listeners: set[Callable[[], None]] = set()
         self._connections: weakref.WeakSet[Connection] = weakref.WeakSet()
+        self._subscriptions = InMemorySubscriptionBus()
         self._users = 0
         self._watcher: asyncio.Task[None] | None = None
         self._last: int | None = None
@@ -202,6 +216,7 @@ class Guide:
         server = FastMCP(
             "showcase", instructions=instructions, version=__version__, lifespan=self._lifespan
         )
+        _share_changes(server, self._subscriptions)
         tools = self._tools(external)
         writes = {
             item.name
@@ -474,7 +489,8 @@ class Guide:
         ]
 
     async def notify(self) -> None:
-        """Tell every open connection, then every listener, that the saved guide changed."""
+        """Tell subscribers, legacy connections and listeners that the saved guide changed."""
+        await self._subscriptions.publish(ResourcesListChanged())
         notice = ResourceListChangedNotification().model_dump(
             by_alias=True, mode="json", exclude_none=True
         )
@@ -548,8 +564,8 @@ class _ChangeNotices(Middleware):
     as the client. A handshake-era (2025-11-25) connection owns the standing channel the guide's
     broadcast travels on. A sessionless 2026-07-28 client never initializes and has no such
     channel, so each of its successful writes carries one notice bound to the call: an SSE answer
-    delivers it before the result. A remembered connection gets no bound notice, since the
-    broadcast already reaches it, so a writer hears one notice per write in either era.
+    delivers it before the result. Modern subscriptions separately carry shared guide changes.
+    A remembered connection gets no bound notice, since the broadcast already reaches it.
     """
 
     def __init__(self, guide: Guide, writes: set[str]):
