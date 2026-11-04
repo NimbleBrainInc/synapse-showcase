@@ -121,7 +121,7 @@ select:focus-visible {
   flex-direction: column;
   gap: 0.8rem;
 }
-.board-column form {
+.practice-task-entry {
   display: flex;
   flex-direction: column;
   gap: 0.6rem;

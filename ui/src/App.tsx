@@ -157,6 +157,10 @@ export default function App() {
       setBusy(false);
     }
   };
+  const addTask = async () => {
+    if (busy || !taskTitle.trim()) return;
+    if (await change("board_add", { title: taskTitle }, "Task added.")) setTaskTitle("");
+  };
   const inspect = async (action: () => Promise<void>) => {
     if (operation.current) return;
     operation.current = true;
@@ -243,9 +247,15 @@ export default function App() {
   const index = path.findIndex((item) => item.id === step.id);
   const playing = state.view.playing && !reducedMotion;
   const installing = Boolean(job && ["queued", "running"].includes(job.state));
+  const agentStep = step.id === "agents";
   const navigate = (id: string) => change("guide_step", { step: id });
   const next = async (skip = false) => {
-    if (await change("guide_step", { step: step.id, complete: !skip, skip }, "Progress saved.")) {
+    const skipStep = skip || agentStep;
+    // Only the external connection check completes the agents chapter.
+    if (
+      (agentStep && state.agentCheck) ||
+      await change("guide_step", { step: step.id, complete: !skipStep, skip: skipStep }, "Progress saved.")
+    ) {
       const target = path[index + 1];
       if (target) await navigate(target.id);
     }
@@ -302,26 +312,26 @@ export default function App() {
               </Card>
             ))}
           {status === "todo" && (
-            <form
-              onSubmit={(event) => {
-                event.preventDefault();
-                void change("board_add", { title: taskTitle }, "Task added.").then((ok) => {
-                  if (ok) setTaskTitle("");
-                });
-              }}
-            >
+            // The host iframe blocks native form submissions.
+            <div className="practice-task-entry">
               <label className="field-label">
                 New practice task
                 <input
                   value={taskTitle}
                   maxLength={120}
                   onChange={(event) => setTaskTitle(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" && !event.nativeEvent.isComposing) {
+                      event.preventDefault();
+                      void addTask();
+                    }
+                  }}
                 />
               </label>
-              <Button disabled={busy || !taskTitle.trim()} type="submit">
+              <Button disabled={busy || !taskTitle.trim()} type="button" onClick={() => void addTask()}>
                 Add task
               </Button>
-            </form>
+            </div>
           )}
         </Card>
       ))}
@@ -894,11 +904,15 @@ export default function App() {
                 >
                   Back
                 </Button>
-                <Button variant="ghost" disabled={busy} onClick={() => void next(true)}>
-                  Skip for now
-                </Button>
+                {!agentStep && (
+                  <Button variant="ghost" disabled={busy} onClick={() => void next(true)}>
+                    Skip for now
+                  </Button>
+                )}
                 <Button variant="primary" disabled={busy} onClick={() => void next()}>
-                  {path[index + 1] ? "Done, continue" : "Finish the guide"}
+                  {agentStep
+                    ? state.agentCheck ? "Continue" : "Continue without an agent"
+                    : path[index + 1] ? "Done, continue" : "Finish the guide"}
                 </Button>
               </footer>
               <label className="motion-preference">

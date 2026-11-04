@@ -9,7 +9,7 @@ const host = vi.hoisted(() => ({
   dataSync: undefined as undefined | (() => unknown),
 }));
 vi.mock("@nimblebrain/synapse/react", () => ({
-  useApp: () => ({ callTool: host.callTool, openLink: host.openLink }),
+  useApp: () => host,
   useDataSync: (callback: () => unknown) => {
     host.dataSync = callback;
   },
@@ -53,9 +53,15 @@ beforeEach(() => {
   );
   host.callTool.mockImplementation(async (name: string, args: Record<string, unknown>) => {
     calls.push([name, args]);
-    if (name === "guide_step" && !("complete" in args))
-      current = { ...current, revision: current.revision + 1, step: String(args.step) };
-    else if (name !== "guide_status") current = { ...current, revision: current.revision + 1 };
+    if (name === "guide_step") {
+      if (args.step === "agents" && args.complete === true) {
+        return { isError: true, content: [{ type: "text", text: "Only the connection check completes agents." }] };
+      }
+      const step = String(args.step);
+      current = { ...current, revision: current.revision + 1, step };
+      if (args.complete) current.completed = [...current.completed, step];
+      if (args.skip && !current.completed.includes(step)) current.skipped = [...current.skipped, step];
+    } else if (name !== "guide_status") current = { ...current, revision: current.revision + 1 };
     return ok(current);
   });
 });
@@ -74,6 +80,7 @@ test("quick pace: a chapter opened from the menu moves on to its quick neighbour
   fireEvent.click(screen.getByRole("button", { name: "Done, continue" }));
   await waitFor(() => expect(current.step).toBe("board"));
   expect(calls).toContainEqual(["guide_step", { step: "control", complete: true, skip: false }]);
+  expect(current.completed).toContain("control");
   expect(calls.some(([name, args]) => name === "guide_step" && args.step === "welcome")).toBe(
     false,
   );
@@ -84,6 +91,56 @@ test("quick pace: Back from an opened chapter returns to the previous quick chap
   render(<App />);
   fireEvent.click(await screen.findByRole("button", { name: "Back" }));
   await waitFor(() => expect(current.step).toBe("board"));
+});
+
+test.each(["guided", "quick"] as const)("the unchecked agents chapter continues honestly in %s pace", async (pace) => {
+  current = guide({ step: "agents", pace });
+  render(<App />);
+  const continueWithout = await screen.findByRole("button", { name: "Continue without an agent" });
+  expect(screen.queryByRole("button", { name: "Skip for now" })).toBeNull();
+  fireEvent.click(continueWithout);
+  await waitFor(() => expect(current.step).toBe("build"));
+  expect(current.skipped).toEqual(["agents"]);
+  expect(current.completed).not.toContain("agents");
+  expect(current.agentCheck).toBeUndefined();
+  expect(calls.filter(([name]) => name !== "guide_status")).toEqual([
+    ["guide_step", { step: "agents", complete: false, skip: true }],
+    ["guide_step", { step: "build" }],
+  ]);
+});
+
+test("a checked agents chapter only navigates and preserves the check", async () => {
+  const checkedAt = "2026-01-01T00:00:00.000Z";
+  current = guide({ step: "agents", completed: ["agents"], agentCheck: checkedAt });
+  render(<App />);
+  fireEvent.click(await screen.findByRole("button", { name: /^Continue$/ }));
+  await waitFor(() => expect(current.step).toBe("build"));
+  expect(current.completed).toEqual(["agents"]);
+  expect(current.skipped).toEqual([]);
+  expect(current.agentCheck).toBe(checkedAt);
+  expect(calls.filter(([name]) => name !== "guide_status")).toEqual([
+    ["guide_step", { step: "build" }],
+  ]);
+});
+
+test("a refused agents skip stays on the chapter and shows the error", async () => {
+  current = guide({ step: "agents" });
+  host.callTool.mockImplementation(async (name: string, args: Record<string, unknown>) => {
+    calls.push([name, args]);
+    return name === "guide_step"
+      ? { isError: true, content: [{ type: "text", text: "Progress could not be saved." }] }
+      : ok(current);
+  });
+  render(<App />);
+  fireEvent.click(await screen.findByRole("button", { name: "Continue without an agent" }));
+  expect((await screen.findByRole("alert")).textContent).toContain("Progress could not be saved.");
+  expect(current.step).toBe("agents");
+  expect(current.skipped).toEqual([]);
+  expect(current.completed).toEqual([]);
+  expect(current.agentCheck).toBeUndefined();
+  expect(calls.filter(([name]) => name !== "guide_status")).toEqual([
+    ["guide_step", { step: "agents", complete: false, skip: true }],
+  ]);
 });
 
 test("a change notice refreshes the guide without clearing an unsent draft", async () => {
@@ -102,6 +159,56 @@ test("a change notice refreshes the guide without clearing an unsent draft", asy
   });
   expect(await screen.findByText("Added by agent")).toBeTruthy();
   expect((screen.getByLabelText("New practice task") as HTMLInputElement).value).toBe("Unsent idea");
+});
+
+test("practice tasks use click and Enter without a native form submission", async () => {
+  current = guide({ step: "board" });
+  render(<App />);
+  const draft = await screen.findByLabelText("New practice task") as HTMLInputElement;
+  const add = screen.getByRole("button", { name: "Add task" }) as HTMLButtonElement;
+  // jsdom does not enforce the host iframe's missing allow-forms permission.
+  expect(draft.closest("form")).toBeNull();
+  expect(add.type).toBe("button");
+
+  fireEvent.change(draft, { target: { value: "From the button" } });
+  fireEvent.click(add);
+  await waitFor(() => expect(draft.value).toBe(""));
+  fireEvent.change(draft, { target: { value: "From Enter" } });
+  fireEvent.keyDown(draft, { key: "Enter" });
+  await waitFor(() => expect(draft.value).toBe(""));
+  expect(calls.filter(([name]) => name === "board_add")).toEqual([
+    ["board_add", { title: "From the button" }],
+    ["board_add", { title: "From Enter" }],
+  ]);
+});
+
+test("practice tasks reject empty, composing and duplicate submissions and retain failed drafts", async () => {
+  current = guide({ step: "board" });
+  let fail!: (error: Error) => void;
+  const pending = new Promise<never>((_, reject) => { fail = reject; });
+  host.callTool.mockImplementation(async (name: string, args: Record<string, unknown>) => {
+    calls.push([name, args]);
+    return name === "board_add" ? pending : ok(current);
+  });
+  render(<App />);
+  const draft = await screen.findByLabelText("New practice task") as HTMLInputElement;
+  const add = screen.getByRole("button", { name: "Add task" }) as HTMLButtonElement;
+  fireEvent.change(draft, { target: { value: "  " } });
+  fireEvent.keyDown(draft, { key: "Enter" });
+  expect(add.disabled).toBe(true);
+  fireEvent.change(draft, { target: { value: "Keep this draft" } });
+  fireEvent.keyDown(draft, { key: "Enter", isComposing: true });
+  expect(calls.some(([name]) => name === "board_add")).toBe(false);
+
+  fireEvent.click(add);
+  fireEvent.keyDown(draft, { key: "Enter" });
+  fireEvent.click(add);
+  expect(add.disabled).toBe(true);
+  expect(calls.filter(([name]) => name === "board_add")).toHaveLength(1);
+  await act(async () => { fail(new Error("Practice board unavailable")); });
+  expect(await screen.findByRole("alert")).toBeTruthy();
+  expect(draft.value).toBe("Keep this draft");
+  expect(add.disabled).toBe(false);
 });
 
 test("an app the host will not plan cannot be reviewed for installation", async () => {
