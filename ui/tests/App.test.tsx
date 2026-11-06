@@ -109,6 +109,35 @@ test.each(["guided", "quick"] as const)("the unchecked agents chapter continues 
   ]);
 });
 
+test.each([
+  ["codex", '[mcp_servers.nimble-bootstrap]\nurl = "http://127.0.0.1:27249/agent/mcp"\n\n[mcp_servers.nimble-bootstrap.http_headers]\nx-nimble-bootstrap = "local"'],
+  ["claude", '{\n  "mcpServers": {\n    "nimble-bootstrap": {\n      "type": "http",\n      "url": "http://127.0.0.1:27249/agent/mcp",\n      "headers": {\n        "x-nimble-bootstrap": "local"\n      }\n    }\n  }\n}'],
+])("agent setup preserves the host's %s configuration without JSON escaping", async (agent, display) => {
+  current = guide({ step: "agents", capabilities: { ...guide().capabilities, agentSetup: true } });
+  const setup = { agent, instance: "default", config: { mcpServers: {} }, display };
+  host.callTool.mockImplementation(async (name: string, args: Record<string, unknown>) => {
+    calls.push([name, args]);
+    return ok(name === "guide_agent_setup" ? setup : current);
+  });
+  const { container } = render(<App />);
+  fireEvent.change(await screen.findByLabelText("Your coding agent"), { target: { value: agent } });
+  fireEvent.click(screen.getByRole("button", { name: "Show my connection configuration" }));
+  await waitFor(() => expect(container.querySelector("pre")?.textContent).toBe(display));
+  expect(calls.filter(([name]) => name !== "guide_status")).toEqual([["guide_agent_setup", { agent }]]);
+});
+
+test.each([undefined, { config: "not text" }, "   "])(
+  "agent setup retains older host output when display is unusable: %j",
+  async (display) => {
+    current = guide({ step: "agents", capabilities: { ...guide().capabilities, agentSetup: true } });
+    const setup = { agent: "claude", config: { mcpServers: {} }, display };
+    host.callTool.mockImplementation(async (name: string) => ok(name === "guide_agent_setup" ? setup : current));
+    const { container } = render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "Show my connection configuration" }));
+    await waitFor(() => expect(container.querySelector("pre")?.textContent).toBe(JSON.stringify(setup, null, 2)));
+  },
+);
+
 test("a checked agents chapter only navigates and preserves the check", async () => {
   const checkedAt = "2026-01-01T00:00:00.000Z";
   current = guide({ step: "agents", completed: ["agents"], agentCheck: checkedAt });
