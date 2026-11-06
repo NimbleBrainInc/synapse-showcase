@@ -708,7 +708,13 @@ export default function App() {
                 MCP connection.
               </Text>
             )}
-            {agentSetup && <pre>{JSON.stringify(agentSetup, null, 2)}</pre>}
+            {agentSetup && (
+              <pre>
+                {typeof agentSetup.display === "string" && agentSetup.display.trim()
+                  ? agentSetup.display
+                  : JSON.stringify(agentSetup, null, 2)}
+              </pre>
+            )}
           </Card>
           <Card>
             <Heading size="sm">Check the connection</Heading>
